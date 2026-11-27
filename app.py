@@ -37,9 +37,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------------------------------------------------
 # 1. 기초 통계 데이터 (2023년 가구에너지패널조사 및 한전 하계 요금표 기준)
-# ---------------------------------------------------------
 AC_SPECS = {
     "분리 벽걸이형": {"watt": 780, "avg_hours": 3.1},
     "분리 스탠드형": {"watt": 1650, "avg_hours": 3.4},
@@ -48,7 +46,7 @@ AC_SPECS = {
 }
 
 DRIVE_TYPE_FACTOR = {
-    "인버터형 (신형 · 2011년 이후 대부분)": 0.58,  # 희망온도 도달 후 저전력 유지
+    "인버터형 (신형 · 2011년 이후 대부분)": 0.58,
     "정속형 (구형 · 실외기 계속 가동)": 0.92,
 }
 
@@ -58,7 +56,6 @@ WIND_FACTOR = {
     "강풍 / 파워냉방": 1.15,
 }
 
-# 가구원 수 및 평형에 따른 비냉방기(평소) 월 기본 전력사용량(kWh)
 BASE_USAGE_BY_MEMBERS = {
     "1인 가구": 195,
     "2인 가구": 255,
@@ -73,13 +70,10 @@ AREA_ADJUSTMENT = {
     "40평대 이상 (100㎡ 이상)": 1.20,
 }
 
-# ---------------------------------------------------------
 # 2. 한전 주택용(저압) 하계(7~8월) 전기요금 계산 함수
-# ---------------------------------------------------------
 def calc_kepco_summer_bill(kwh: float) -> int:
     if kwh <= 0:
         return 0
-    # 하계 누진 구간: 1단계(~300), 2단계(301~450), 3단계(451~)
     if kwh <= 300:
         base_fee = 910
         energy_fee = kwh * 120.0
@@ -90,11 +84,9 @@ def calc_kepco_summer_bill(kwh: float) -> int:
         base_fee = 7300
         energy_fee = (300 * 120.0) + (150 * 214.6) + ((kwh - 450) * 307.3)
 
-    # 기후환경요금(9원/kWh) + 연료비조정요금(5원/kWh)
     extra_fee = kwh * (9.0 + 5.0)
     subtotal = base_fee + energy_fee + extra_fee
 
-    # 부가가치세(10%) + 전력산업기반기금(3.7%, 10원 미만 절사)
     vat = round(subtotal * 0.1)
     fund = int((subtotal * 0.037) // 10 * 10)
     total = int((subtotal + vat + fund) // 10 * 10)
@@ -106,16 +98,13 @@ def calc_ac_kwh(ac_type, drive_type, units, days, hours, temp, wind, area_label)
     wind_ratio = WIND_FACTOR[wind]
     area_ratio = AREA_ADJUSTMENT[area_label]
 
-    # 설정온도 24도 기준 1도 낮출 때마다 약 7% 소비전력 증가, 높일 때마다 약 7% 감소
     temp_ratio = max(0.55, 1.0 + (24 - temp) * 0.07)
 
     effective_kw = (base_watt / 1000.0) * drive_ratio * wind_ratio * temp_ratio * (area_ratio ** 0.5)
     total_kwh = effective_kw * units * days * hours
     return round(total_kwh, 1)
 
-# ---------------------------------------------------------
 # 3. 사이드바: 사용자 입력 영역
-# ---------------------------------------------------------
 with st.sidebar:
     st.header("🏠 가구 및 거주 환경")
     members = st.selectbox("가구원 수", list(BASE_USAGE_BY_MEMBERS.keys()), index=2)
@@ -134,8 +123,73 @@ with st.sidebar:
     temp = st.slider("희망 설정 온도 (℃)", min_value=18, max_value=28, value=24)
     wind = st.select_slider("바람 세기", options=list(WIND_FACTOR.keys()), value="중풍")
 
-# ---------------------------------------------------------
-# 4. 요금 계산 (사용자 예상치 vs 동일 조건 가구 평균)
-# ---------------------------------------------------------
-# 1) 평소 기본 사용량 및 기본 요금
-base_kwh = round(BASE_USAGE_BY_MEMBERS
+# 4. 요금 계산
+base_kwh = round(BASE_USAGE_BY_MEMBERS[members] * AREA_ADJUSTMENT[area], 1)
+base_bill = calc_kepco_summer_bill(base_kwh)
+
+user_ac_kwh = calc_ac_kwh(ac_type, drive_type, units, days, hours, temp, wind, area)
+user_total_bill = calc_kepco_summer_bill(base_kwh + user_ac_kwh)
+user_ac_bill = max(0, user_total_bill - base_bill)
+
+avg_hours_ref = AC_SPECS[ac_type]["avg_hours"]
+avg_ac_kwh = calc_ac_kwh(ac_type, "인버터형 (신형 · 2011년 이후 대부분)", units, 24, avg_hours_ref, 25, "중풍", area)
+avg_total_bill = calc_kepco_summer_bill(base_kwh + avg_ac_kwh)
+avg_ac_bill = max(0, avg_total_bill - base_bill)
+
+saved_ac_kwh = calc_ac_kwh(ac_type, drive_type, units, days, max(0.5, hours - 1.0), min(28, temp + 2), wind, area)
+saved_ac_bill = max(0, calc_kepco_summer_bill(base_kwh + saved_ac_kwh) - base_bill)
+potential_savings = max(0, user_ac_bill - saved_ac_bill)
+
+# 5. 메인 대시보드 출력
+st.title("❄️ 에어컨 예상 전기요금 계산기")
+st.caption(f"2023년 가구에너지패널조사 통계 데이터 및 한전 하계 누진제 기준 | 조건: **{members} · {area} · {ac_type} {units}대**")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">나의 월간 에어컨 예상 요금</div>
+        <div class="metric-value" style="color:#2563eb;">{user_ac_bill:,}원</div>
+        <div class="metric-sub">에어컨 전력량: <b>{user_ac_kwh} kWh</b> (월 {days}일 · 일 {hours}시간)</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with col2:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">동일 조건 가구 평균 요금</div>
+        <div class="metric-value">{avg_ac_bill:,}원</div>
+        <div class="metric-sub">동일 평형·가구 평균 전력량: <b>{avg_ac_kwh} kWh</b></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with col3:
+    diff = user_ac_bill - avg_ac_bill
+    diff_color = "#dc2626" if diff > 0 else "#16a34a"
+    diff_sign = "+" if diff > 0 else ""
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">평균 대비 요금 차이</div>
+        <div class="metric-value" style="color:{diff_color};">{diff_sign}{diff:,}원</div>
+        <div class="metric-sub">총 예상 전기요금(기본 포함): <b>{user_total_bill:,}원</b></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+st.write("")
+
+# 조건부 피드백 배너
+if user_ac_bill > avg_ac_bill:
+    over_pct = round(((user_ac_bill - avg_ac_bill) / max(1, avg_ac_bill)) * 100, 1)
+    st.warning(
+        f"⚠️ **절약이 필요해요!** 비슷한 주거 환경({members}, {area})에서 **{ac_type} {units}대**를 사용하는 가구 평균보다 "
+        f"약 **{diff:,}원 ({over_pct}%)** 더 나올 것으로 예상됩니다.\n\n"
+        f"💡 **절약 팁:** 설정 온도를 **2℃ 높이고({min(28, temp+2)}℃)** 하루 사용 시간을 **1시간만 줄여도** "
+        f"한 달에 약 **{potential_savings:,}원**을 아낄 수 있습니다."
+    )
+else:
+    saved_vs_avg = avg_ac_bill - user_ac_bill
+    st.success(
+        f"🎉 **아주 잘하고 계세요!** 비슷한 주거 환경({members}, {area})에서 **{ac_type} {units}대**를 사용하는 가구 평균보다 "
+        f"약 **{saved_vs_avg:,}원** 더 알뜰하게 사용하고 계십니다. 지금의 적정 냉방 습관을 유지해 보세요!"
+    )
